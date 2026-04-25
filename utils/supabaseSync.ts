@@ -1,0 +1,266 @@
+import { supabase } from '@/lib/supabase'
+import type { Habit, StickyNote } from '@/utils/storageUtils'
+import type { DbHabit, DbDailyCompletion, DbStickyNote } from '@/lib/supabase'
+import { format } from 'date-fns'
+
+export const getCurrentUser = async () => {
+  if (!supabase) return null
+  const { data: { user } } = await supabase.auth.getUser()
+  return user
+}
+
+export const signOut = async () => {
+  if (!supabase) return
+  const { error } = await supabase.auth.signOut()
+  if (error) throw error
+}
+
+export const syncHabitsToSupabase = async (habits: Habit[], currentWeekDate: Date) => {
+  if (!supabase) return false
+  const user = await getCurrentUser()
+  if (!user) return
+
+  try {
+    const dbHabits: Partial<DbHabit>[] = habits.map(habit => ({
+      id: habit.id,
+      user_id: user.id,
+      name: habit.name,
+      current_streak: habit.currentStreak,
+      longest_streak: habit.longestStreak,
+      last_completed_date: habit.lastCompletedDate || null,
+    }))
+
+    const { error: habitsError } = await supabase
+      .from('habits')
+      .upsert(dbHabits, { onConflict: 'id' })
+
+    if (habitsError) throw habitsError
+
+    const completions: Partial<DbDailyCompletion>[] = []
+    
+    habits.forEach(habit => {
+      habit.completed.forEach((status, dayIndex) => {
+        const dayDate = new Date(currentWeekDate)
+        const mondayOffset = currentWeekDate.getDay() === 0 ? -6 : 1 - currentWeekDate.getDay()
+        dayDate.setDate(currentWeekDate.getDate() + mondayOffset + dayIndex)
+        
+        completions.push({
+          user_id: user.id,
+          habit_id: habit.id,
+          date: format(dayDate, 'yyyy-MM-dd'),
+          completed: status === 'completed',
+        })
+      })
+    })
+
+    if (completions.length > 0) {
+      const { error: completionsError } = await supabase
+        .from('daily_completions')
+        .upsert(completions, { onConflict: 'habit_id,date' })
+
+      if (completionsError) throw completionsError
+    }
+
+    return true
+  } catch (error) {
+    console.error('Error syncing habits to Supabase:', error)
+    return false
+  }
+}
+
+export const loadHabitsFromSupabase = async (currentWeekDate: Date): Promise<Habit[] | null> => {
+  if (!supabase) return null
+  const user = await getCurrentUser()
+  if (!user) return null
+
+  try {
+    const { data: dbHabits, error: habitsError } = await supabase
+      .from('habits')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true })
+
+    if (habitsError) throw habitsError
+
+    const habitIds = dbHabits.map(h => h.id)
+    
+    const mondayOffset = currentWeekDate.getDay() === 0 ? -6 : 1 - currentWeekDate.getDay()
+    const weekStart = new Date(currentWeekDate)
+    weekStart.setDate(currentWeekDate.getDate() + mondayOffset)
+    const weekEnd = new Date(weekStart)
+    weekEnd.setDate(weekStart.getDate() + 6)
+
+    const { data: dbCompletions, error: completionsError } = await supabase
+      .from('daily_completions')
+      .select('*')
+      .eq('user_id', user.id)
+      .in('habit_id', habitIds)
+      .gte('date', format(weekStart, 'yyyy-MM-dd'))
+      .lte('date', format(weekEnd, 'yyyy-MM-dd'))
+
+    if (completionsError) throw completionsError
+
+    const habits: Habit[] = dbHabits.map((dbHabit: DbHabit) => {
+      const completed = Array(7).fill(false).map((_, dayIndex) => {
+        const dayDate = new Date(weekStart)
+        dayDate.setDate(weekStart.getDate() + dayIndex)
+        const dateStr = format(dayDate, 'yyyy-MM-dd')
+        
+        const completion = dbCompletions.find(
+          (c: DbDailyCompletion) => c.habit_id === dbHabit.id && c.date === dateStr
+        )
+        
+        return completion?.completed ? 'completed' : false
+      })
+
+      return {
+        id: dbHabit.id,
+        name: dbHabit.name,
+        completed: completed as ("completed" | "skipped" | false)[],
+        currentStreak: dbHabit.current_streak,
+        longestStreak: dbHabit.longest_streak,
+        lastCompletedDate: dbHabit.last_completed_date || undefined,
+      }
+    })
+
+    return habits
+  } catch (error) {
+    console.error('Error loading habits from Supabase:', error)
+    return null
+  }
+}
+
+export const syncStickyNotesToSupabase = async (notes: StickyNote[]) => {
+  if (!supabase) return false
+  const user = await getCurrentUser()
+  if (!user) return
+
+  try {
+    const dbNotes: Partial<DbStickyNote>[] = notes.map(note => ({
+      id: note.id,
+      user_id: user.id,
+      content: note.content,
+      position_x: note.position.x,
+      position_y: note.position.y,
+      size_width: note.size.width,
+      size_height: note.size.height,
+      color: note.color,
+      type: note.type,
+    }))
+
+    const { error } = await supabase
+      .from('sticky_notes')
+      .upsert(dbNotes, { onConflict: 'id' })
+
+    if (error) throw error
+    return true
+  } catch (error) {
+    console.error('Error syncing sticky notes to Supabase:', error)
+    return false
+  }
+}
+
+export const loadStickyNotesFromSupabase = async (): Promise<StickyNote[] | null> => {
+  if (!supabase) return null
+  const user = await getCurrentUser()
+  if (!user) return null
+
+  try {
+    const { data: dbNotes, error } = await supabase
+      .from('sticky_notes')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true })
+
+    if (error) throw error
+
+    const notes: StickyNote[] = dbNotes.map((dbNote: DbStickyNote) => ({
+      id: dbNote.id,
+      content: dbNote.content,
+      position: {
+        x: dbNote.position_x,
+        y: dbNote.position_y,
+      },
+      size: {
+        width: dbNote.size_width,
+        height: dbNote.size_height,
+      },
+      color: dbNote.color,
+      type: dbNote.type as 'reminder' | 'goal' | 'note',
+    }))
+
+    return notes
+  } catch (error) {
+    console.error('Error loading sticky notes from Supabase:', error)
+    return null
+  }
+}
+
+export const deleteStickyNoteFromSupabase = async (noteId: string) => {
+  if (!supabase) return false
+  const user = await getCurrentUser()
+  if (!user) return
+
+  try {
+    const { error } = await supabase
+      .from('sticky_notes')
+      .delete()
+      .eq('id', noteId)
+      .eq('user_id', user.id)
+
+    if (error) throw error
+    return true
+  } catch (error) {
+    console.error('Error deleting sticky note from Supabase:', error)
+    return false
+  }
+}
+
+export const subscribeToHabitsChanges = (callback: () => void) => {
+  if (!supabase) return () => {}
+  const channel = supabase
+    .channel('habits-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'habits',
+      },
+      callback
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'daily_completions',
+      },
+      callback
+    )
+    .subscribe()
+
+  return () => {
+    supabase.removeChannel(channel)
+  }
+}
+
+export const subscribeToStickyNotesChanges = (callback: () => void) => {
+  if (!supabase) return () => {}
+  const channel = supabase
+    .channel('sticky-notes-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'sticky_notes',
+      },
+      callback
+    )
+    .subscribe()
+
+  return () => {
+    supabase.removeChannel(channel)
+  }
+}
