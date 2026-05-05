@@ -141,7 +141,7 @@ export const HealthTracker = ({
               onKeyDown={(e) => handleKeyDown(e, dayIndex)}
               placeholder="..."
               rows={1}
-              className="w-full resize-none overflow-hidden rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs text-gray-700 placeholder-gray-300 focus:border-gray-300 focus:bg-white focus:outline-none transition-colors scrollbar-hide leading-relaxed"
+              className="w-full resize-none overflow-hidden rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-[10px] text-gray-700 placeholder-gray-300 focus:border-gray-300 focus:bg-white focus:outline-none transition-colors scrollbar-hide leading-relaxed"
             />
           </motion.div>
         ))}
