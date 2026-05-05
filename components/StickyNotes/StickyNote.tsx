@@ -20,6 +20,7 @@ export const StickyNote = ({
   note,
   isSelected,
   isEditing,
+  onSelect,
   onEdit,
   onUpdate,
   onDelete,
@@ -49,6 +50,8 @@ export const StickyNote = ({
 
   // Ultra-optimized drag logic - direct DOM manipulation, no React re-renders
   const handleMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    onSelect()
     const target = e.target as HTMLElement
     if (target.closest('button') || target.tagName === 'TEXTAREA') {
       return
@@ -271,7 +274,7 @@ export const StickyNote = ({
       className="hover:shadow-lg transition-shadow duration-200"
     >
       <div 
-        className="w-full h-full rounded-lg shadow-md p-4 relative border border-gray-200"
+        className="w-full h-full rounded-lg shadow-md p-4 relative border border-gray-200 overflow-hidden"
         style={{ backgroundColor: note.color || '#fef3c7' }}
       >
         {/* X Button */}
@@ -320,13 +323,13 @@ export const StickyNote = ({
           <textarea
             value={note.content}
             onChange={handleContentChange}
-            className="w-full h-full resize-none bg-transparent border-none outline-none text-sm text-gray-800 placeholder-gray-500 pt-6"
+            className="w-full h-full resize-none bg-transparent border-none outline-none text-sm leading-relaxed text-gray-800 placeholder-gray-500 pt-4 overflow-y-auto scrollbar-hide"
             placeholder=""
             autoFocus
             onBlur={() => onUpdate({ content: note.content })}
           />
         ) : (
-          <div className="text-sm text-gray-800 whitespace-pre-wrap break-words leading-relaxed pt-6">
+          <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed pt-4 overflow-y-auto h-full scrollbar-hide">
             {note.content}
           </div>
         )}

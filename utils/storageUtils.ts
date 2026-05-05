@@ -2,6 +2,8 @@ export interface WeekData {
   weekStart: string; // ISO string
   habits: Habit[];
   notes: StickyNote[];
+  gratitude?: string[]; // 7 entries, one per day
+  health?: string[]; // 7 entries, one per day
 }
 
 export interface Habit {
@@ -227,6 +229,8 @@ export const createDefaultWeekData = (weekStart: string): WeekData => {
       ...habit,
       completed: Array(7).fill(false) // Reset completion for new week
     })),
-    notes: []
+    notes: [],
+    gratitude: Array(7).fill(''),
+    health: Array(7).fill(''),
   }
 } 

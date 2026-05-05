@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { StickyNote, StickyNote as StickyNoteIcon } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { StickyNote as StickyNoteComponent } from './StickyNote'
@@ -8,9 +9,10 @@ import { StickyNote as StickyNoteType } from '@/utils/storageUtils'
 interface NoteContainerProps {
   weekData: any
   saveWeekData: (data: any) => void
+  onSupabaseDelete?: (noteId: string) => void
 }
 
-export const NoteContainer = ({ weekData, saveWeekData }: NoteContainerProps) => {
+export const NoteContainer = ({ weekData, saveWeekData, onSupabaseDelete }: NoteContainerProps) => {
   const {
     notes,
     selectedNote,
@@ -39,6 +41,7 @@ export const NoteContainer = ({ weekData, saveWeekData }: NoteContainerProps) =>
 
   const handleNoteDelete = (noteId: string) => {
     deleteNote(noteId)
+    onSupabaseDelete?.(noteId)
   }
 
   const handleNoteMove = (noteId: string, position: { x: number; y: number }) => {
@@ -54,6 +57,16 @@ export const NoteContainer = ({ weekData, saveWeekData }: NoteContainerProps) =>
     stopEditing()
   }
 
+  useEffect(() => {
+    const onDocumentMouseDown = () => {
+      handleBackgroundClick()
+    }
+    document.addEventListener('mousedown', onDocumentMouseDown)
+    return () => {
+      document.removeEventListener('mousedown', onDocumentMouseDown)
+    }
+  }, [selectedNote, editingNote])
+
   return (
     <>
       {/* Notes */}
@@ -63,7 +76,7 @@ export const NoteContainer = ({ weekData, saveWeekData }: NoteContainerProps) =>
           note={note}
           isSelected={selectedNote === note.id}
           isEditing={editingNote === note.id}
-          onSelect={() => {}} // Not used in new implementation
+          onSelect={() => selectNote(note.id)}
           onEdit={() => handleNoteEdit(note.id)}
           onUpdate={(updates) => handleNoteUpdate(note.id, updates)}
           onDelete={() => handleNoteDelete(note.id)}

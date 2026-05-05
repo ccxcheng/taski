@@ -11,15 +11,19 @@ import { WeekDisplay } from "@/components/WeekNavigation/WeekDisplay"
 import { CalendarPicker } from "@/components/WeekNavigation/CalendarPicker"
 import { Calendar } from "lucide-react"
 import { NoteContainer } from "@/components/StickyNotes/NoteContainer"
+import { GratitudeTracker } from "@/components/Gratitude/GratitudeTracker"
+import { HealthTracker } from "@/components/Gratitude/HealthTracker"
 import { motion, AnimatePresence } from "framer-motion"
 import { useStickyNotes } from "@/hooks/useStickyNotes"
 import { updateTemplateFromCurrentWeek, resetTemplateToDefault, updateHabitStreaks } from "@/utils/storageUtils"
 import { SillyCat } from "@/components/SillyCat/SillyCat"
 import AuthModal from "@/components/Auth/AuthModal"
-import { getCurrentUser, signOut, syncHabitsToSupabase, syncStickyNotesToSupabase, subscribeToHabitsChanges, subscribeToStickyNotesChanges } from "@/utils/supabaseSync"
+import { getCurrentUser, signOut, syncHabitsToSupabase, loadHabitsFromSupabase, syncStickyNotesToSupabase, loadStickyNotesFromSupabase, deleteStickyNoteFromSupabase, syncGratitudeToSupabase, loadGratitudeFromSupabase, syncHealthToSupabase, loadHealthFromSupabase, subscribeToHabitsChanges, subscribeToStickyNotesChanges, subscribeToGratitudeChanges, subscribeToHealthChanges, syncNotepadToSupabase, loadNotepadFromSupabase, subscribeToNotepadChanges } from "@/utils/supabaseSync"
 import { supabase } from "@/lib/supabase"
 import { useTheme } from "@/contexts/ThemeContext"
 import { ProfileMenu } from "@/components/ProfileMenu"
+import { GlobalNotepad } from "@/components/GlobalNotepad/GlobalNotepad"
+import { NotebookPen } from "lucide-react"
 import { getButtonClasses, getCheckboxClasses, getFloatingButtonClasses, getProgressBarClasses, getTextClasses, getHeadingClasses } from "@/utils/themeUtils"
 import { useSounds } from "@/hooks/useSounds"
 
@@ -95,7 +99,25 @@ export default function HabitTracker() {
   const [user, setUser] = useState<any>(null)
   const [displayName, setDisplayName] = useState<string>('')
   const [isMobile, setIsMobile] = useState(false)
+  const [showGratitude, setShowGratitude] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('showGratitude') === 'true'
+  })
+  const [showHealth, setShowHealth] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('showHealth') === 'true'
+  })
+  const hasLoadedHealthRef = useRef<string | null>(null)
+  const [isNotepadOpen, setIsNotepadOpen] = useState(false)
+  const [notepadContent, setNotepadContent] = useState('')
+  const [isNotepadSyncing, setIsNotepadSyncing] = useState(false)
+  const hasLoadedNotepadRef = useRef(false)
+  const notepadSyncReadyRef = useRef(false)
   const editInputRef = useRef<HTMLInputElement>(null)
+  const weekDataRef = useRef<any>(null)
+  const hasLoadedNotesRef = useRef(false)
+  const hasLoadedHabitsRef = useRef(false)
+  const hasLoadedGratitudeRef = useRef<string | null>(null) // stores last loaded weekKey
 
   // Use the new week navigation hook
   const {
@@ -112,13 +134,14 @@ export default function HabitTracker() {
   } = useWeekNavigation()
 
   const habits = weekData?.habits || []
+  weekDataRef.current = weekData
 
   // Sticky notes hook
   const {
     addNote,
   } = useStickyNotes(weekData, saveCurrentWeekData)
 
-  const { playButton, playTaskDone, playConfetti, playStickyNote, playTabOpen } = useSounds()
+  const { playButton, playTaskDone, playConfetti, playStickyNote, playTabOpen, playMenuOpen, playMenuClose } = useSounds()
 
   const handleAddStickyNote = () => {
     playStickyNote()
@@ -172,6 +195,24 @@ export default function HabitTracker() {
     loadUserData()
   }, [])
 
+  // Load habits from Supabase once on login
+  useEffect(() => {
+    if (!user || !weekData || hasLoadedHabitsRef.current) return
+    hasLoadedHabitsRef.current = true
+
+    loadHabitsFromSupabase(currentWeekDate).then(supabaseHabits => {
+      if (supabaseHabits === null) return
+      const localHabits = weekDataRef.current?.habits ?? []
+      if (supabaseHabits.length > 0) {
+        // Supabase has data — use it as source of truth
+        saveCurrentWeekData({ ...weekDataRef.current!, habits: supabaseHabits })
+      } else if (localHabits.length > 0) {
+        // Supabase is empty but local has habits — push local up
+        syncHabitsToSupabase(localHabits, currentWeekDate)
+      }
+    })
+  }, [user, weekData, currentWeekDate, saveCurrentWeekData])
+
   useEffect(() => {
     if (user && weekData && habits.length > 0) {
       const syncTimeout = setTimeout(() => {
@@ -181,36 +222,220 @@ export default function HabitTracker() {
     }
   }, [user, habits, currentWeekDate, weekData])
 
+  // Load notes from Supabase once on login
   useEffect(() => {
-    if (user && weekData?.notes && weekData.notes.length > 0) {
-      const syncTimeout = setTimeout(() => {
-        syncStickyNotesToSupabase(weekData.notes)
-      }, 1000)
-      return () => clearTimeout(syncTimeout)
-    }
+    if (!user || !weekData || hasLoadedNotesRef.current) return
+    hasLoadedNotesRef.current = true
+
+    loadStickyNotesFromSupabase().then(supabaseNotes => {
+      if (supabaseNotes === null) return
+      const localNotes = weekDataRef.current?.notes ?? []
+      if (supabaseNotes.length > 0) {
+        saveCurrentWeekData({ ...weekDataRef.current!, notes: supabaseNotes })
+      } else if (localNotes.length > 0) {
+        syncStickyNotesToSupabase(localNotes)
+      }
+    })
+  }, [user, weekData, saveCurrentWeekData])
+
+  // Sync notes to Supabase on any change (including deletions)
+  useEffect(() => {
+    if (!user || !weekData?.notes) return
+    const syncTimeout = setTimeout(() => {
+      syncStickyNotesToSupabase(weekData.notes)
+    }, 1000)
+    return () => clearTimeout(syncTimeout)
   }, [user, weekData?.notes])
+
+  // Load gratitude from Supabase on login and on week change
+  useEffect(() => {
+    if (!user || !weekData || hasLoadedGratitudeRef.current === currentWeekKey) return
+    hasLoadedGratitudeRef.current = currentWeekKey
+
+    loadGratitudeFromSupabase(currentWeekKey).then(entries => {
+      if (entries !== null && weekDataRef.current) {
+        saveCurrentWeekData({ ...weekDataRef.current, gratitude: entries })
+      }
+    })
+  }, [user, weekData, currentWeekKey, saveCurrentWeekData])
+
+  // Sync gratitude to Supabase on change
+  useEffect(() => {
+    if (!user || !weekData?.gratitude) return
+    const syncTimeout = setTimeout(() => {
+      syncGratitudeToSupabase(currentWeekKey, weekData.gratitude!)
+    }, 1000)
+    return () => clearTimeout(syncTimeout)
+  }, [user, weekData?.gratitude, currentWeekKey])
+
+  // Load health from Supabase on login and on week change
+  useEffect(() => {
+    if (!user || !weekData || hasLoadedHealthRef.current === currentWeekKey) return
+    hasLoadedHealthRef.current = currentWeekKey
+
+    loadHealthFromSupabase(currentWeekKey).then(entries => {
+      if (entries !== null && weekDataRef.current) {
+        saveCurrentWeekData({ ...weekDataRef.current, health: entries })
+      }
+    })
+  }, [user, weekData, currentWeekKey, saveCurrentWeekData])
+
+  // Sync health to Supabase on change
+  useEffect(() => {
+    if (!user || !weekData?.health) return
+    const syncTimeout = setTimeout(() => {
+      syncHealthToSupabase(currentWeekKey, weekData.health!)
+    }, 1000)
+    return () => clearTimeout(syncTimeout)
+  }, [user, weekData?.health, currentWeekKey])
+
+  // Load notepad from Supabase once on login
+  useEffect(() => {
+    if (!user || hasLoadedNotepadRef.current) return
+    hasLoadedNotepadRef.current = true
+
+    loadNotepadFromSupabase().then(content => {
+      if (content !== null) setNotepadContent(content)
+      notepadSyncReadyRef.current = true // only allow sync AFTER load resolves
+    })
+  }, [user])
+
+  // Sync notepad to Supabase on change (debounced) — guarded by sync-ready flag
+  useEffect(() => {
+    if (!user || !notepadSyncReadyRef.current) return
+    setIsNotepadSyncing(true)
+    const syncTimeout = setTimeout(() => {
+      syncNotepadToSupabase(notepadContent).then(() => setIsNotepadSyncing(false))
+    }, 1000)
+    return () => clearTimeout(syncTimeout)
+  }, [user, notepadContent])
 
   useEffect(() => {
     if (!user) return
 
     const unsubscribeHabits = subscribeToHabitsChanges(() => {
-      console.log('Habits changed on another device, reloading...')
-      window.location.reload()
+      console.log('Habits changed on another device, refreshing...')
+      loadHabitsFromSupabase(currentWeekDate).then(supabaseHabits => {
+        if (supabaseHabits !== null && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, habits: supabaseHabits })
+        }
+      })
     })
 
     const unsubscribeNotes = subscribeToStickyNotesChanges(() => {
-      console.log('Sticky notes changed on another device, reloading...')
-      window.location.reload()
+      console.log('Sticky notes changed on another device, refreshing...')
+      loadStickyNotesFromSupabase().then(supabaseNotes => {
+        if (supabaseNotes !== null && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, notes: supabaseNotes })
+        }
+      })
+    })
+
+    const unsubscribeNotepad = subscribeToNotepadChanges(() => {
+      loadNotepadFromSupabase().then(content => {
+        if (content !== null) setNotepadContent(content)
+      })
+    })
+
+    const unsubscribeGratitude = subscribeToGratitudeChanges(() => {
+      loadGratitudeFromSupabase(currentWeekKey).then(entries => {
+        if (entries !== null && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, gratitude: entries })
+        }
+      })
+    })
+
+    const unsubscribeHealth = subscribeToHealthChanges(() => {
+      loadHealthFromSupabase(currentWeekKey).then(entries => {
+        if (entries !== null && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, health: entries })
+        }
+      })
     })
 
     return () => {
       unsubscribeHabits()
       unsubscribeNotes()
+      unsubscribeNotepad()
+      unsubscribeGratitude()
+      unsubscribeHealth()
     }
-  }, [user])
+  }, [user, currentWeekDate, currentWeekKey, saveCurrentWeekData])
+
+  // Re-pull all data on tab focus, debounced to at most once per 5 seconds
+  const lastFetchedRef = useRef<number>(0)
+  const FETCH_THRESHOLD_MS = 5_000
+
+  useEffect(() => {
+    if (!user) return
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      const now = Date.now()
+      if (now - lastFetchedRef.current < FETCH_THRESHOLD_MS) return
+      lastFetchedRef.current = now
+
+      loadHabitsFromSupabase(currentWeekDate).then(supabaseHabits => {
+        if (supabaseHabits !== null && supabaseHabits.length > 0 && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, habits: supabaseHabits })
+        }
+      })
+      loadStickyNotesFromSupabase().then(supabaseNotes => {
+        if (supabaseNotes !== null && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, notes: supabaseNotes })
+        }
+      })
+      loadGratitudeFromSupabase(currentWeekKey).then(entries => {
+        if (entries !== null && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, gratitude: entries })
+        }
+      })
+      loadHealthFromSupabase(currentWeekKey).then(entries => {
+        if (entries !== null && weekDataRef.current) {
+          saveCurrentWeekData({ ...weekDataRef.current, health: entries })
+        }
+      })
+      loadNotepadFromSupabase().then(content => {
+        if (content !== null) setNotepadContent(content)
+      })
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [user, currentWeekDate, currentWeekKey, saveCurrentWeekData])
 
   const handleNameUpdate = (newName: string) => {
     setDisplayName(newName)
+  }
+
+  const handleToggleGratitude = () => {
+    setShowGratitude(prev => {
+      const next = !prev
+      localStorage.setItem('showGratitude', String(next))
+      return next
+    })
+  }
+
+  const handleToggleHealth = () => {
+    setShowHealth(prev => {
+      const next = !prev
+      localStorage.setItem('showHealth', String(next))
+      return next
+    })
+  }
+
+  const handleGratitudeUpdate = (dayIndex: number, value: string) => {
+    if (!weekData) return
+    const current = weekData.gratitude ?? Array(7).fill('')
+    const updated = current.map((v: string, i: number) => (i === dayIndex ? value : v))
+    saveCurrentWeekData({ ...weekData, gratitude: updated })
+  }
+
+  const handleHealthUpdate = (dayIndex: number, value: string) => {
+    if (!weekData) return
+    const current = weekData.health ?? Array(7).fill('')
+    const updated = current.map((v: string, i: number) => (i === dayIndex ? value : v))
+    saveCurrentWeekData({ ...weekData, health: updated })
   }
 
   const handleSignOut = async () => {
@@ -226,6 +451,7 @@ export default function HabitTracker() {
   
   const currentDay = currentWeekDate.toLocaleDateString("en-US", { weekday: "long" }).toLowerCase()
   const currentDayIndex = days.indexOf(currentDay)
+  const todayDay = new Date().toLocaleDateString("en-US", { weekday: "long" }).toLowerCase()
   const remainingTasks = habits.filter((habit) => habit.completed[currentDayIndex] === false).length
 
   // Calculate visible days for mobile (show current day and 1 day on each side = 3 days total)
@@ -420,15 +646,29 @@ export default function HabitTracker() {
         fontFamily: theme.fonts.body 
       }}
     >
-      {/* Profile Menu - Top Right */}
-      <div className="fixed top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 z-[9999]">
-      <ProfileMenu
-        user={user}
-        displayName={displayName}
-        onSignOut={handleSignOut}
-        onSignIn={() => setIsAuthModalOpen(true)}
-        onNameUpdate={handleNameUpdate}
-      />
+      {/* Top Right Controls */}
+      <div className="fixed top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 z-[9999] flex items-center gap-6">
+        {/* Global Notepad Button */}
+        <motion.button
+          onClick={() => { playMenuOpen(); setIsNotepadOpen(true) }}
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.9 }}
+          className="cursor-pointer transition-opacity hover:opacity-80"
+          title="Open Notepad"
+        >
+          <NotebookPen className="w-5 h-5" style={{ color: '#0b268c' }} />
+        </motion.button>
+        <ProfileMenu
+          user={user}
+          displayName={displayName}
+          onSignOut={handleSignOut}
+          onSignIn={() => setIsAuthModalOpen(true)}
+          onNameUpdate={handleNameUpdate}
+          showGratitude={showGratitude}
+          onToggleGratitude={handleToggleGratitude}
+          showHealth={showHealth}
+          onToggleHealth={handleToggleHealth}
+        />
       </div>
 
       {/* Header with Week Navigation */}
@@ -467,7 +707,7 @@ export default function HabitTracker() {
 
         <h1 className={`text-center mb-2 text-2xl sm:text-2xl md:text-3xl ${getHeadingClasses(theme)}`}>{currentTime}</h1>
         <motion.h2 
-          className={`text-center mb-2 text-sm sm:text-base cursor-pointer transition-colors px-4`}
+          className={`w-fit mx-auto mb-2 text-sm sm:text-base cursor-pointer transition-colors px-2`}
           style={{ color: theme.colors.text.primary }}
           whileHover={{ scale: 1.02, color: theme.colors.text.primary }}
           whileTap={{ scale: 0.98 }}
@@ -521,8 +761,8 @@ export default function HabitTracker() {
             return (
               <div
                 key={dayIndex}
-                className={`text-center text-xs sm:text-sm md:text-base ${day === currentDay ? 'font-bold' : 'font-medium'}`}
-                style={{ color: day === currentDay ? '#0b268c' : '#374151' }}
+                className={`text-center text-xs sm:text-sm md:text-base ${isCurrentWeek && day === todayDay ? 'font-bold' : 'font-medium'}`}
+                style={{ color: isCurrentWeek && day === todayDay ? '#0b268c' : '#374151' }}
               >
                 {isMobile ? day.slice(0, 3) : day}
               </div>
@@ -619,6 +859,30 @@ export default function HabitTracker() {
         {editMode && <NewHabitRow onAdd={addHabit} />}
       </div>
 
+      {/* Gratitude Tracker */}
+      <AnimatePresence>
+        {showGratitude && weekData && (
+          <GratitudeTracker
+            gratitude={weekData.gratitude ?? Array(7).fill('')}
+            onUpdate={handleGratitudeUpdate}
+            visibleDayIndices={visibleDayIndices}
+            isMobile={isMobile}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Health Tracker */}
+      <AnimatePresence>
+        {showHealth && weekData && (
+          <HealthTracker
+            health={weekData.health ?? Array(7).fill('')}
+            onUpdate={handleHealthUpdate}
+            visibleDayIndices={visibleDayIndices}
+            isMobile={isMobile}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Floating Action Buttons */}
       <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 md:bottom-8 md:right-8 flex flex-col gap-2 sm:gap-3 md:gap-4 z-40">
         
@@ -680,13 +944,24 @@ export default function HabitTracker() {
         <NoteContainer
           weekData={weekData}
           saveWeekData={saveCurrentWeekData}
+          onSupabaseDelete={user ? (noteId) => deleteStickyNoteFromSupabase(noteId) : undefined}
         />
       )}
 
       {/* Silly Cat */}
       <SillyCat 
         completedToday={completedTasks} 
-        totalHabits={totalTasks} 
+        totalHabits={totalTasks}
+        onDoubleClick={() => { handleToggleGratitude(); handleToggleHealth() }}
+      />
+
+      {/* Global Notepad */}
+      <GlobalNotepad
+        isOpen={isNotepadOpen}
+        onClose={() => { playMenuClose(); setIsNotepadOpen(false) }}
+        content={notepadContent}
+        onChange={setNotepadContent}
+        isSyncing={isNotepadSyncing}
       />
 
       {/* Auth Modal */}

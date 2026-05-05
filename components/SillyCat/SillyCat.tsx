@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import confetti from 'canvas-confetti'
 import { useSounds } from '@/hooks/useSounds'
@@ -6,6 +6,7 @@ import { useSounds } from '@/hooks/useSounds'
 interface SillyCatProps {
   completedToday: number
   totalHabits: number
+  onDoubleClick?: () => void
 }
 
 const CLICK_MESSAGES = [
@@ -54,33 +55,33 @@ const TIME_MESSAGES: { [key: number]: string[] } = {
   23: ['time to get ready for bed!', 'sleep soon!', 'bedtime! zzz']
 }
 
-export const SillyCat = ({ completedToday, totalHabits }: SillyCatProps) => {
+export const SillyCat = ({ completedToday, totalHabits, onDoubleClick }: SillyCatProps) => {
   const { playBoop } = useSounds()
   const [showHappyAnimation, setShowHappyAnimation] = useState(false)
   const [position, setPosition] = useState(0)
   const [direction, setDirection] = useState(1)
   const [hasTriggeredConfetti, setHasTriggeredConfetti] = useState(false)
-  const [lastCompletedCount, setLastCompletedCount] = useState(0)
+  const lastCompletedCountRef = useRef(0)
   const [showSpeechBubble, setShowSpeechBubble] = useState(false)
   const [currentMessage, setCurrentMessage] = useState('')
   const [lastHourChecked, setLastHourChecked] = useState(-1)
-  const [isInitialLoad, setIsInitialLoad] = useState(true)
+  const isInitialLoadRef = useRef(true)
 
   const completionRate = totalHabits > 0 ? completedToday / totalHabits : 0
   const shouldBeHappy = completionRate >= 1
 
-  // Mark as not initial load after mount
+  // Mark as not initial load after mount (ref avoids stale closure issues)
   useEffect(() => {
-    const timer = setTimeout(() => setIsInitialLoad(false), 2000)
+    const timer = setTimeout(() => { isInitialLoadRef.current = false }, 2000)
     return () => clearTimeout(timer)
   }, [])
 
   // Show random message helper
   const showMessage = (message: string) => {
-    if (isInitialLoad) return // Don't show messages on initial load
+    if (isInitialLoadRef.current) return
     setCurrentMessage(message)
     setShowSpeechBubble(true)
-    setTimeout(() => setShowSpeechBubble(false), 1200) // Shortened to 1.2 seconds
+    setTimeout(() => setShowSpeechBubble(false), 1200)
   }
 
   // Handle cat click
@@ -96,7 +97,7 @@ export const SillyCat = ({ completedToday, totalHabits }: SillyCatProps) => {
   // Check for time-based messages
   useEffect(() => {
     const checkTimeMessages = () => {
-      if (isInitialLoad) return // Skip on initial load
+      if (isInitialLoadRef.current) return
       
       const currentHour = new Date().getHours()
       
@@ -115,7 +116,7 @@ export const SillyCat = ({ completedToday, totalHabits }: SillyCatProps) => {
     const interval = setInterval(checkTimeMessages, 60000)
     
     return () => clearInterval(interval)
-  }, [lastHourChecked, isInitialLoad])
+  }, [lastHourChecked])
 
   // Show happy animation and confetti when all habits are completed
   useEffect(() => {
@@ -136,25 +137,25 @@ export const SillyCat = ({ completedToday, totalHabits }: SillyCatProps) => {
 
   // Show happy animation when any task is completed (but not when all tasks are complete)
   useEffect(() => {
-    if (completedToday > lastCompletedCount && !shouldBeHappy) {
+    if (completedToday > lastCompletedCountRef.current && !shouldBeHappy) {
+      lastCompletedCountRef.current = completedToday
       setShowHappyAnimation(true)
-      setLastCompletedCount(completedToday)
-      
-      // 40% chance to show encouragement message
-      if (Math.random() < 0.4) {
+      if (Math.random() < 0.5) {
         const randomMessage = COMPLETION_MESSAGES[Math.floor(Math.random() * COMPLETION_MESSAGES.length)]
         showMessage(randomMessage)
       }
-      
       setTimeout(() => setShowHappyAnimation(false), 700)
     }
-  }, [completedToday, lastCompletedCount, shouldBeHappy])
+    if (!shouldBeHappy && completedToday < lastCompletedCountRef.current) {
+      // habits were un-completed or reset — sync the ref down
+      lastCompletedCountRef.current = completedToday
+    }
+  }, [completedToday, shouldBeHappy])
 
   // Reset confetti trigger when habits are incomplete
   useEffect(() => {
     if (!shouldBeHappy) {
       setHasTriggeredConfetti(false)
-      setLastCompletedCount(0)
     }
   }, [shouldBeHappy])
 
@@ -199,6 +200,7 @@ export const SillyCat = ({ completedToday, totalHabits }: SillyCatProps) => {
       
       <motion.div
         onClick={handleCatClick}
+        onDoubleClick={onDoubleClick}
         animate={{ 
           scale: showHappyAnimation ? [1, 1.1, 1] : 1,
           rotate: showHappyAnimation ? [0, 5, -5, 0] : 0,

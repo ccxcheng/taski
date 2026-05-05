@@ -44,3 +44,26 @@ export interface DbStickyNote {
   created_at: string
   updated_at: string
 }
+
+export interface DbGratitude {
+  user_id: string
+  week_start: string
+  entries: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface DbHealth {
+  user_id: string
+  week_start: string
+  entries: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface DbNotepad {
+  user_id: string
+  content: string
+  created_at: string
+  updated_at: string
+}

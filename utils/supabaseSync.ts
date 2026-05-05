@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import type { Habit, StickyNote } from '@/utils/storageUtils'
-import type { DbHabit, DbDailyCompletion, DbStickyNote } from '@/lib/supabase'
+import type { DbHabit, DbDailyCompletion, DbStickyNote, DbGratitude, DbHealth, DbNotepad } from '@/lib/supabase'
 import { format } from 'date-fns'
 
 export const getCurrentUser = async () => {
@@ -216,6 +216,96 @@ export const deleteStickyNoteFromSupabase = async (noteId: string) => {
   }
 }
 
+export const syncGratitudeToSupabase = async (weekStart: string, entries: string[]) => {
+  if (!supabase) return false
+  const user = await getCurrentUser()
+  if (!user) return false
+
+  try {
+    const { error } = await supabase
+      .from('gratitude')
+      .upsert(
+        { user_id: user.id, week_start: weekStart, entries },
+        { onConflict: 'user_id,week_start' }
+      )
+    if (error) throw error
+    return true
+  } catch (error) {
+    console.error('Error syncing gratitude to Supabase:', error)
+    return false
+  }
+}
+
+export const loadGratitudeFromSupabase = async (weekStart: string): Promise<string[] | null> => {
+  if (!supabase) return null
+  const user = await getCurrentUser()
+  if (!user) return null
+
+  try {
+    const { data, error } = await supabase
+      .from('gratitude')
+      .select('entries')
+      .eq('user_id', user.id)
+      .eq('week_start', weekStart)
+      .single()
+
+    if (error) {
+      if (error.code === 'PGRST116') return Array(7).fill('') // no row yet
+      throw error
+    }
+
+    return (data as DbGratitude).entries ?? Array(7).fill('')
+  } catch (error) {
+    console.error('Error loading gratitude from Supabase:', error)
+    return null
+  }
+}
+
+export const syncHealthToSupabase = async (weekStart: string, entries: string[]) => {
+  if (!supabase) return false
+  const user = await getCurrentUser()
+  if (!user) return false
+
+  try {
+    const { error } = await supabase
+      .from('health')
+      .upsert(
+        { user_id: user.id, week_start: weekStart, entries },
+        { onConflict: 'user_id,week_start' }
+      )
+    if (error) throw error
+    return true
+  } catch (error) {
+    console.error('Error syncing health to Supabase:', error)
+    return false
+  }
+}
+
+export const loadHealthFromSupabase = async (weekStart: string): Promise<string[] | null> => {
+  if (!supabase) return null
+  const user = await getCurrentUser()
+  if (!user) return null
+
+  try {
+    const { data, error } = await supabase
+      .from('health')
+      .select('entries')
+      .eq('user_id', user.id)
+      .eq('week_start', weekStart)
+      .single()
+
+    if (error) {
+      if (error.code === 'PGRST116') return Array(7).fill('') // no row yet
+      throw error
+    }
+
+    return (data as DbHealth).entries ?? Array(7).fill('')
+  } catch (error) {
+    console.error('Error loading health from Supabase:', error)
+    return null
+  }
+}
+
 export const subscribeToHabitsChanges = (callback: () => void) => {
   if (!supabase) return () => {}
   const channel = supabase
@@ -243,6 +333,74 @@ export const subscribeToHabitsChanges = (callback: () => void) => {
   return () => {
     supabase.removeChannel(channel)
   }
+}
+
+export const syncNotepadToSupabase = async (content: string) => {
+  if (!supabase) return false
+  const user = await getCurrentUser()
+  if (!user) return false
+
+  try {
+    const { error } = await supabase
+      .from('notepad')
+      .upsert({ user_id: user.id, content }, { onConflict: 'user_id' })
+    if (error) throw error
+    return true
+  } catch (error) {
+    console.error('Error syncing notepad to Supabase:', error)
+    return false
+  }
+}
+
+export const loadNotepadFromSupabase = async (): Promise<string | null> => {
+  if (!supabase) return null
+  const user = await getCurrentUser()
+  if (!user) return null
+
+  try {
+    const { data, error } = await supabase
+      .from('notepad')
+      .select('content')
+      .eq('user_id', user.id)
+      .single()
+
+    if (error) {
+      if (error.code === 'PGRST116') return '' // no row yet
+      throw error
+    }
+
+    return (data as DbNotepad).content ?? ''
+  } catch (error) {
+    console.error('Error loading notepad from Supabase:', error)
+    return null
+  }
+}
+
+export const subscribeToGratitudeChanges = (callback: () => void) => {
+  if (!supabase) return () => {}
+  const channel = supabase
+    .channel('gratitude-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'gratitude' }, callback)
+    .subscribe()
+  return () => { supabase.removeChannel(channel) }
+}
+
+export const subscribeToHealthChanges = (callback: () => void) => {
+  if (!supabase) return () => {}
+  const channel = supabase
+    .channel('health-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'health' }, callback)
+    .subscribe()
+  return () => { supabase.removeChannel(channel) }
+}
+
+export const subscribeToNotepadChanges = (callback: () => void) => {
+  if (!supabase) return () => {}
+  const channel = supabase
+    .channel('notepad-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'notepad' }, callback)
+    .subscribe()
+  return () => { supabase.removeChannel(channel) }
 }
 
 export const subscribeToStickyNotesChanges = (callback: () => void) => {

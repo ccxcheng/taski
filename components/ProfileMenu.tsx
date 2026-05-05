@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { LogOut, Palette, Check, Pencil, X } from 'lucide-react'
+import { LogOut, Palette, Check, Pencil, X, Heart, Activity } from 'lucide-react'
 import { useTheme, type ThemeName } from '@/contexts/ThemeContext'
 import React from 'react'
 import { supabase } from '@/lib/supabase'
@@ -12,9 +12,13 @@ interface ProfileMenuProps {
   onSignOut: () => void
   onSignIn: () => void
   onNameUpdate: (newName: string) => void
+  showGratitude: boolean
+  onToggleGratitude: () => void
+  showHealth: boolean
+  onToggleHealth: () => void
 }
 
-export function ProfileMenu({ user, displayName, onSignOut, onSignIn, onNameUpdate }: ProfileMenuProps) {
+export function ProfileMenu({ user, displayName, onSignOut, onSignIn, onNameUpdate, showGratitude, onToggleGratitude, showHealth, onToggleHealth }: ProfileMenuProps) {
   const [isOpen, setIsOpen] = React.useState(false)
   const [isEditingName, setIsEditingName] = React.useState(false)
   const [editedName, setEditedName] = React.useState(displayName)
@@ -190,6 +194,25 @@ export function ProfileMenu({ user, displayName, onSignOut, onSignIn, onNameUpda
                   </p>
                 </div>
               )}
+            </div>
+
+            <div className={`py-2 border-b ${currentTheme === 'glass' ? 'border-white/40' : currentTheme === 'neomorphic' ? 'border-soft-light' : 'border-gray-200'}`}>
+              <button
+                onClick={() => { onToggleGratitude(); setIsOpen(false) }}
+                className={`w-full ${getMenuItemClasses(showGratitude)}`}
+              >
+                <Heart className="w-4 h-4" />
+                <span className="flex-1 text-left text-sm">Gratitude Tracker</span>
+                {showGratitude && <Check className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={() => { onToggleHealth(); setIsOpen(false) }}
+                className={`w-full ${getMenuItemClasses(showHealth)}`}
+              >
+                <Activity className="w-4 h-4" />
+                <span className="flex-1 text-left text-sm">Health Tracker</span>
+                {showHealth && <Check className="w-4 h-4" />}
+              </button>
             </div>
 
             <div className={`py-2 border-b ${currentTheme === 'glass' ? 'border-white/40' : currentTheme === 'neomorphic' ? 'border-soft-light' : 'border-gray-200'}`}>
