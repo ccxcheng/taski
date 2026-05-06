@@ -18,7 +18,8 @@ import { useStickyNotes } from "@/hooks/useStickyNotes"
 import { updateTemplateFromCurrentWeek, resetTemplateToDefault, updateHabitStreaks } from "@/utils/storageUtils"
 import { SillyCat } from "@/components/SillyCat/SillyCat"
 import AuthModal from "@/components/Auth/AuthModal"
-import { getCurrentUser, signOut, syncHabitsToSupabase, loadHabitsFromSupabase, syncStickyNotesToSupabase, loadStickyNotesFromSupabase, deleteStickyNoteFromSupabase, syncGratitudeToSupabase, loadGratitudeFromSupabase, syncHealthToSupabase, loadHealthFromSupabase, subscribeToHabitsChanges, subscribeToStickyNotesChanges, subscribeToGratitudeChanges, subscribeToHealthChanges, syncNotepadToSupabase, loadNotepadFromSupabase, subscribeToNotepadChanges } from "@/utils/supabaseSync"
+import { getCurrentUser, signOut, syncHabitsToSupabase, syncStickyNotesToSupabase, deleteStickyNoteFromSupabase, syncGratitudeToSupabase, syncHealthToSupabase, syncNotepadToSupabase, loadAllFromSupabase } from "@/utils/supabaseSync"
+import { mergeHabits, mergeNotes, mergeWeekTextArray, mergeNotepad } from "@/utils/syncHelpers"
 import { supabase } from "@/lib/supabase"
 import { useTheme } from "@/contexts/ThemeContext"
 import { ProfileMenu } from "@/components/ProfileMenu"
@@ -107,17 +108,15 @@ export default function HabitTracker() {
     if (typeof window === 'undefined') return false
     return localStorage.getItem('showHealth') === 'true'
   })
-  const hasLoadedHealthRef = useRef<string | null>(null)
   const [isNotepadOpen, setIsNotepadOpen] = useState(false)
   const [notepadContent, setNotepadContent] = useState('')
   const [isNotepadSyncing, setIsNotepadSyncing] = useState(false)
-  const hasLoadedNotepadRef = useRef(false)
-  const notepadSyncReadyRef = useRef(false)
   const editInputRef = useRef<HTMLInputElement>(null)
   const weekDataRef = useRef<any>(null)
-  const hasLoadedNotesRef = useRef(false)
-  const hasLoadedHabitsRef = useRef(false)
-  const hasLoadedGratitudeRef = useRef<string | null>(null) // stores last loaded weekKey
+  // Single flag: true once Supabase load+merge has completed for the current
+  // (user, weekKey) pair. Reset when the user or week changes. Sync effects
+  // are gated on this so they never fire before the initial merge runs.
+  const hasInitialSyncedRef = useRef<string | null>(null)
 
   // Use the new week navigation hook
   const {
@@ -195,230 +194,99 @@ export default function HabitTracker() {
     loadUserData()
   }, [])
 
-  // Load habits from Supabase once on login
+  // ─────────────────────────────────────────────────────────────────────────
+  // Single load + merge: runs once per (user, weekKey) when both are ready.
+  // Pulls all data from Supabase in parallel, merges with local state per the
+  // rules in syncHelpers.ts, and saves the merged result locally. The sync
+  // effects below then push the merged state back up to Supabase.
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!user || !weekData || hasLoadedHabitsRef.current) return
-    hasLoadedHabitsRef.current = true
+    if (!user || !weekData) return
+    const syncKey = `${user.id}:${currentWeekKey}`
+    if (hasInitialSyncedRef.current === syncKey) return
 
-    loadHabitsFromSupabase(currentWeekDate).then(supabaseHabits => {
-      if (supabaseHabits === null) return
-      const localHabits = weekDataRef.current?.habits ?? []
-      if (supabaseHabits.length > 0) {
-        // Supabase has data — use it as source of truth
-        saveCurrentWeekData({ ...weekDataRef.current!, habits: supabaseHabits })
-      } else if (localHabits.length > 0) {
-        // Supabase is empty but local has habits — push local up
-        syncHabitsToSupabase(localHabits, currentWeekDate)
+    let cancelled = false
+    loadAllFromSupabase(currentWeekKey, currentWeekDate).then(remote => {
+      if (cancelled || !weekDataRef.current) return
+
+      const localHabits = weekDataRef.current.habits ?? []
+      const localNotes = weekDataRef.current.notes ?? []
+      const localGratitude = weekDataRef.current.gratitude ?? Array(7).fill('')
+      const localHealth = weekDataRef.current.health ?? Array(7).fill('')
+
+      const mergedHabits = remote.habits ? mergeHabits(localHabits, remote.habits) : localHabits
+      const mergedNotes = remote.notes ? mergeNotes(localNotes, remote.notes) : localNotes
+      const mergedGratitude = remote.gratitude
+        ? mergeWeekTextArray(localGratitude, remote.gratitude)
+        : localGratitude
+      const mergedHealth = remote.health
+        ? mergeWeekTextArray(localHealth, remote.health)
+        : localHealth
+
+      saveCurrentWeekData({
+        ...weekDataRef.current,
+        habits: mergedHabits,
+        notes: mergedNotes,
+        gratitude: mergedGratitude,
+        health: mergedHealth,
+      })
+
+      if (remote.notepad !== null) {
+        setNotepadContent(prev => mergeNotepad(prev, remote.notepad!))
       }
-    })
-  }, [user, weekData, currentWeekDate, saveCurrentWeekData])
 
-  useEffect(() => {
-    if (user && weekData && habits.length > 0) {
-      const syncTimeout = setTimeout(() => {
-        syncHabitsToSupabase(habits, currentWeekDate)
-      }, 1000)
-      return () => clearTimeout(syncTimeout)
-    }
-  }, [user, habits, currentWeekDate, weekData])
-
-  // Load notes from Supabase once on login
-  useEffect(() => {
-    if (!user || !weekData || hasLoadedNotesRef.current) return
-    hasLoadedNotesRef.current = true
-
-    loadStickyNotesFromSupabase().then(supabaseNotes => {
-      if (supabaseNotes === null) return
-      const localNotes = weekDataRef.current?.notes ?? []
-      if (supabaseNotes.length > 0) {
-        saveCurrentWeekData({ ...weekDataRef.current!, notes: supabaseNotes })
-      } else if (localNotes.length > 0) {
-        syncStickyNotesToSupabase(localNotes)
-      }
-    })
-  }, [user, weekData, saveCurrentWeekData])
-
-  // Sync notes to Supabase on any change (including deletions)
-  useEffect(() => {
-    if (!user || !weekData?.notes) return
-    const syncTimeout = setTimeout(() => {
-      syncStickyNotesToSupabase(weekData.notes)
-    }, 1000)
-    return () => clearTimeout(syncTimeout)
-  }, [user, weekData?.notes])
-
-  // Load gratitude from Supabase on login and on week change
-  useEffect(() => {
-    if (!user || !weekData || hasLoadedGratitudeRef.current === currentWeekKey) return
-    hasLoadedGratitudeRef.current = currentWeekKey
-
-    loadGratitudeFromSupabase(currentWeekKey).then(entries => {
-      if (entries === null || !weekDataRef.current) return
-      const local = weekDataRef.current.gratitude ?? Array(7).fill('')
-      const localHasAny = local.some((v: string) => (v ?? '').trim().length > 0)
-      const supabaseHasAny = entries.some((v: string) => (v ?? '').trim().length > 0)
-
-      if (supabaseHasAny) {
-        // Supabase has content — use it
-        saveCurrentWeekData({ ...weekDataRef.current, gratitude: entries })
-      } else if (localHasAny) {
-        // Supabase empty but local has content — push local up
-        syncGratitudeToSupabase(currentWeekKey, local)
-      }
-    })
-  }, [user, weekData, currentWeekKey, saveCurrentWeekData])
-
-  // Sync gratitude to Supabase on change
-  useEffect(() => {
-    if (!user || !weekData?.gratitude) return
-    const syncTimeout = setTimeout(() => {
-      syncGratitudeToSupabase(currentWeekKey, weekData.gratitude!)
-    }, 1000)
-    return () => clearTimeout(syncTimeout)
-  }, [user, weekData?.gratitude, currentWeekKey])
-
-  // Load health from Supabase on login and on week change
-  useEffect(() => {
-    if (!user || !weekData || hasLoadedHealthRef.current === currentWeekKey) return
-    hasLoadedHealthRef.current = currentWeekKey
-
-    loadHealthFromSupabase(currentWeekKey).then(entries => {
-      if (entries === null || !weekDataRef.current) return
-      const local = weekDataRef.current.health ?? Array(7).fill('')
-      const localHasAny = local.some((v: string) => (v ?? '').trim().length > 0)
-      const supabaseHasAny = entries.some((v: string) => (v ?? '').trim().length > 0)
-
-      if (supabaseHasAny) {
-        saveCurrentWeekData({ ...weekDataRef.current, health: entries })
-      } else if (localHasAny) {
-        syncHealthToSupabase(currentWeekKey, local)
-      }
-    })
-  }, [user, weekData, currentWeekKey, saveCurrentWeekData])
-
-  // Sync health to Supabase on change
-  useEffect(() => {
-    if (!user || !weekData?.health) return
-    const syncTimeout = setTimeout(() => {
-      syncHealthToSupabase(currentWeekKey, weekData.health!)
-    }, 1000)
-    return () => clearTimeout(syncTimeout)
-  }, [user, weekData?.health, currentWeekKey])
-
-  // Load notepad from Supabase once on login
-  useEffect(() => {
-    if (!user || hasLoadedNotepadRef.current) return
-    hasLoadedNotepadRef.current = true
-
-    loadNotepadFromSupabase().then(content => {
-      if (content !== null) setNotepadContent(content)
-      notepadSyncReadyRef.current = true // only allow sync AFTER load resolves
-    })
-  }, [user])
-
-  // Sync notepad to Supabase on change (debounced) — guarded by sync-ready flag
-  useEffect(() => {
-    if (!user || !notepadSyncReadyRef.current) return
-    setIsNotepadSyncing(true)
-    const syncTimeout = setTimeout(() => {
-      syncNotepadToSupabase(notepadContent).then(() => setIsNotepadSyncing(false))
-    }, 1000)
-    return () => clearTimeout(syncTimeout)
-  }, [user, notepadContent])
-
-  useEffect(() => {
-    if (!user) return
-
-    const unsubscribeHabits = subscribeToHabitsChanges(() => {
-      console.log('Habits changed on another device, refreshing...')
-      loadHabitsFromSupabase(currentWeekDate).then(supabaseHabits => {
-        if (supabaseHabits !== null && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, habits: supabaseHabits })
-        }
-      })
-    })
-
-    const unsubscribeNotes = subscribeToStickyNotesChanges(() => {
-      console.log('Sticky notes changed on another device, refreshing...')
-      loadStickyNotesFromSupabase().then(supabaseNotes => {
-        if (supabaseNotes !== null && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, notes: supabaseNotes })
-        }
-      })
-    })
-
-    const unsubscribeNotepad = subscribeToNotepadChanges(() => {
-      loadNotepadFromSupabase().then(content => {
-        if (content !== null) setNotepadContent(content)
-      })
-    })
-
-    const unsubscribeGratitude = subscribeToGratitudeChanges(() => {
-      loadGratitudeFromSupabase(currentWeekKey).then(entries => {
-        if (entries !== null && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, gratitude: entries })
-        }
-      })
-    })
-
-    const unsubscribeHealth = subscribeToHealthChanges(() => {
-      loadHealthFromSupabase(currentWeekKey).then(entries => {
-        if (entries !== null && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, health: entries })
-        }
-      })
+      // Mark this (user, weekKey) as initially synced AFTER state is updated;
+      // sync effects gate on this so they don't fire before the merge.
+      hasInitialSyncedRef.current = syncKey
     })
 
     return () => {
-      unsubscribeHabits()
-      unsubscribeNotes()
-      unsubscribeNotepad()
-      unsubscribeGratitude()
-      unsubscribeHealth()
+      cancelled = true
     }
-  }, [user, currentWeekDate, currentWeekKey, saveCurrentWeekData])
+  }, [user, weekData, currentWeekKey, currentWeekDate, saveCurrentWeekData])
 
-  // Re-pull all data on tab focus, debounced to at most once per 5 seconds
-  const lastFetchedRef = useRef<number>(0)
-  const FETCH_THRESHOLD_MS = 5_000
+  // ─────────────────────────────────────────────────────────────────────────
+  // Sync effects (1s debounced). Each watches one slice of state and pushes
+  // it to Supabase. All gated on hasInitialSyncedRef so they never run
+  // before the initial merge has completed for the current week.
+  // ─────────────────────────────────────────────────────────────────────────
+  const syncKey = user ? `${user.id}:${currentWeekKey}` : null
+  const isSyncReady = syncKey !== null && hasInitialSyncedRef.current === syncKey
 
   useEffect(() => {
-    if (!user) return
+    if (!isSyncReady || !weekData || habits.length === 0) return
+    const t = setTimeout(() => syncHabitsToSupabase(habits, currentWeekDate), 1000)
+    return () => clearTimeout(t)
+  }, [isSyncReady, habits, currentWeekDate, weekData])
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') return
-      const now = Date.now()
-      if (now - lastFetchedRef.current < FETCH_THRESHOLD_MS) return
-      lastFetchedRef.current = now
+  useEffect(() => {
+    if (!isSyncReady || !weekData?.notes) return
+    const t = setTimeout(() => syncStickyNotesToSupabase(weekData.notes), 1000)
+    return () => clearTimeout(t)
+  }, [isSyncReady, weekData?.notes])
 
-      loadHabitsFromSupabase(currentWeekDate).then(supabaseHabits => {
-        if (supabaseHabits !== null && supabaseHabits.length > 0 && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, habits: supabaseHabits })
-        }
-      })
-      loadStickyNotesFromSupabase().then(supabaseNotes => {
-        if (supabaseNotes !== null && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, notes: supabaseNotes })
-        }
-      })
-      loadGratitudeFromSupabase(currentWeekKey).then(entries => {
-        if (entries !== null && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, gratitude: entries })
-        }
-      })
-      loadHealthFromSupabase(currentWeekKey).then(entries => {
-        if (entries !== null && weekDataRef.current) {
-          saveCurrentWeekData({ ...weekDataRef.current, health: entries })
-        }
-      })
-      loadNotepadFromSupabase().then(content => {
-        if (content !== null) setNotepadContent(content)
-      })
-    }
+  useEffect(() => {
+    if (!isSyncReady || !weekData?.gratitude) return
+    const t = setTimeout(() => syncGratitudeToSupabase(currentWeekKey, weekData.gratitude!), 1000)
+    return () => clearTimeout(t)
+  }, [isSyncReady, weekData?.gratitude, currentWeekKey])
 
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [user, currentWeekDate, currentWeekKey, saveCurrentWeekData])
+  useEffect(() => {
+    if (!isSyncReady || !weekData?.health) return
+    const t = setTimeout(() => syncHealthToSupabase(currentWeekKey, weekData.health!), 1000)
+    return () => clearTimeout(t)
+  }, [isSyncReady, weekData?.health, currentWeekKey])
+
+  useEffect(() => {
+    if (!isSyncReady) return
+    setIsNotepadSyncing(true)
+    const t = setTimeout(() => {
+      syncNotepadToSupabase(notepadContent).then(() => setIsNotepadSyncing(false))
+    }, 1000)
+    return () => clearTimeout(t)
+  }, [isSyncReady, notepadContent])
+
+
 
   const handleNameUpdate = (newName: string) => {
     setDisplayName(newName)

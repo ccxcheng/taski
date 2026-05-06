@@ -36,6 +36,21 @@ export const syncHabitsToSupabase = async (habits: Habit[], currentWeekDate: Dat
 
     if (habitsError) throw habitsError
 
+    // Delete any habits in Supabase that no longer exist locally
+    const localIds = habits.map(h => h.id)
+    const { data: remoteHabits } = await supabase
+      .from('habits')
+      .select('id')
+      .eq('user_id', user.id)
+    if (remoteHabits) {
+      const staleIds = (remoteHabits as { id: string }[])
+        .map(h => h.id)
+        .filter(id => !localIds.includes(id))
+      if (staleIds.length > 0) {
+        await supabase.from('habits').delete().in('id', staleIds)
+      }
+    }
+
     const completions: Partial<DbDailyCompletion>[] = []
     
     habits.forEach(habit => {
@@ -49,6 +64,7 @@ export const syncHabitsToSupabase = async (habits: Habit[], currentWeekDate: Dat
           habit_id: habit.id,
           date: format(dayDate, 'yyyy-MM-dd'),
           completed: status === 'completed',
+          status: status === 'completed' ? 'completed' : status === 'skipped' ? 'skipped' : 'incomplete',
         })
       })
     })
@@ -82,7 +98,7 @@ export const loadHabitsFromSupabase = async (currentWeekDate: Date): Promise<Hab
 
     if (habitsError) throw habitsError
 
-    const habitIds = dbHabits.map(h => h.id)
+    const habitIds = (dbHabits as DbHabit[]).map((h: DbHabit) => h.id)
     
     const mondayOffset = currentWeekDate.getDay() === 0 ? -6 : 1 - currentWeekDate.getDay()
     const weekStart = new Date(currentWeekDate)
@@ -110,7 +126,10 @@ export const loadHabitsFromSupabase = async (currentWeekDate: Date): Promise<Hab
           (c: DbDailyCompletion) => c.habit_id === dbHabit.id && c.date === dateStr
         )
         
-        return completion?.completed ? 'completed' : false
+        if (!completion) return false
+        if (completion.status === 'completed') return 'completed'
+        if (completion.status === 'skipped') return 'skipped'
+        return completion.completed ? 'completed' : false
       })
 
       return {
@@ -295,43 +314,14 @@ export const loadHealthFromSupabase = async (weekStart: string): Promise<string[
       .single()
 
     if (error) {
-      if (error.code === 'PGRST116') return Array(7).fill('') // no row yet
+      if (error.code === 'PGRST116') return null // no row yet — let sync effect push local up
       throw error
     }
 
-    return (data as DbHealth).entries ?? Array(7).fill('')
+    return (data as DbHealth).entries ?? null
   } catch (error) {
     console.error('Error loading health from Supabase:', error)
     return null
-  }
-}
-
-export const subscribeToHabitsChanges = (callback: () => void) => {
-  if (!supabase) return () => {}
-  const channel = supabase
-    .channel('habits-changes')
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'habits',
-      },
-      callback
-    )
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'daily_completions',
-      },
-      callback
-    )
-    .subscribe()
-
-  return () => {
-    supabase.removeChannel(channel)
   }
 }
 
@@ -376,49 +366,26 @@ export const loadNotepadFromSupabase = async (): Promise<string | null> => {
   }
 }
 
-export const subscribeToGratitudeChanges = (callback: () => void) => {
-  if (!supabase) return () => {}
-  const channel = supabase
-    .channel('gratitude-changes')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'gratitude' }, callback)
-    .subscribe()
-  return () => { supabase.removeChannel(channel) }
+export interface AllSupabaseData {
+  habits: Habit[] | null
+  notes: StickyNote[] | null
+  gratitude: string[] | null
+  health: string[] | null
+  notepad: string | null
 }
 
-export const subscribeToHealthChanges = (callback: () => void) => {
-  if (!supabase) return () => {}
-  const channel = supabase
-    .channel('health-changes')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'health' }, callback)
-    .subscribe()
-  return () => { supabase.removeChannel(channel) }
-}
-
-export const subscribeToNotepadChanges = (callback: () => void) => {
-  if (!supabase) return () => {}
-  const channel = supabase
-    .channel('notepad-changes')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'notepad' }, callback)
-    .subscribe()
-  return () => { supabase.removeChannel(channel) }
-}
-
-export const subscribeToStickyNotesChanges = (callback: () => void) => {
-  if (!supabase) return () => {}
-  const channel = supabase
-    .channel('sticky-notes-changes')
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'sticky_notes',
-      },
-      callback
-    )
-    .subscribe()
-
-  return () => {
-    supabase.removeChannel(channel)
-  }
+// Single entry point: pull all data in parallel. Each field is null if its
+// fetch failed; never throws.
+export const loadAllFromSupabase = async (
+  weekKey: string,
+  weekDate: Date
+): Promise<AllSupabaseData> => {
+  const [habits, notes, gratitude, health, notepad] = await Promise.all([
+    loadHabitsFromSupabase(weekDate),
+    loadStickyNotesFromSupabase(),
+    loadGratitudeFromSupabase(weekKey),
+    loadHealthFromSupabase(weekKey),
+    loadNotepadFromSupabase(),
+  ])
+  return { habits, notes, gratitude, health, notepad }
 }

@@ -23,11 +23,11 @@ export interface DbHabit {
 }
 
 export interface DbDailyCompletion {
-  id: string
   user_id: string
   habit_id: string
   date: string
   completed: boolean
+  status: string
   created_at: string
 }
 
