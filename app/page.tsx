@@ -253,8 +253,17 @@ export default function HabitTracker() {
     hasLoadedGratitudeRef.current = currentWeekKey
 
     loadGratitudeFromSupabase(currentWeekKey).then(entries => {
-      if (entries !== null && weekDataRef.current) {
+      if (entries === null || !weekDataRef.current) return
+      const local = weekDataRef.current.gratitude ?? Array(7).fill('')
+      const localHasAny = local.some((v: string) => (v ?? '').trim().length > 0)
+      const supabaseHasAny = entries.some((v: string) => (v ?? '').trim().length > 0)
+
+      if (supabaseHasAny) {
+        // Supabase has content — use it
         saveCurrentWeekData({ ...weekDataRef.current, gratitude: entries })
+      } else if (localHasAny) {
+        // Supabase empty but local has content — push local up
+        syncGratitudeToSupabase(currentWeekKey, local)
       }
     })
   }, [user, weekData, currentWeekKey, saveCurrentWeekData])
@@ -274,8 +283,15 @@ export default function HabitTracker() {
     hasLoadedHealthRef.current = currentWeekKey
 
     loadHealthFromSupabase(currentWeekKey).then(entries => {
-      if (entries !== null && weekDataRef.current) {
+      if (entries === null || !weekDataRef.current) return
+      const local = weekDataRef.current.health ?? Array(7).fill('')
+      const localHasAny = local.some((v: string) => (v ?? '').trim().length > 0)
+      const supabaseHasAny = entries.some((v: string) => (v ?? '').trim().length > 0)
+
+      if (supabaseHasAny) {
         saveCurrentWeekData({ ...weekDataRef.current, health: entries })
+      } else if (localHasAny) {
+        syncHealthToSupabase(currentWeekKey, local)
       }
     })
   }, [user, weekData, currentWeekKey, saveCurrentWeekData])
