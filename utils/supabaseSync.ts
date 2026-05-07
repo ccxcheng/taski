@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import type { Habit, StickyNote } from '@/utils/storageUtils'
-import type { DbHabit, DbDailyCompletion, DbStickyNote, DbGratitude, DbHealth, DbNotepad } from '@/lib/supabase'
+import type { DbHabit, DbDailyCompletion, DbStickyNote, DbGratitude, DbHealth, DbNotepad, DbHabitTemplate } from '@/lib/supabase'
 import { format } from 'date-fns'
 
 export const getCurrentUser = async () => {
@@ -149,29 +149,52 @@ export const loadHabitsFromSupabase = async (currentWeekDate: Date): Promise<Hab
   }
 }
 
-export const syncStickyNotesToSupabase = async (notes: StickyNote[]) => {
+// Sticky notes are scoped to a specific week. Sync upserts notes that exist
+// locally for this week, and deletes any Supabase notes for this week that
+// aren't in the local list (so deleting locally also deletes remotely).
+export const syncStickyNotesToSupabase = async (notes: StickyNote[], weekStart: string) => {
   if (!supabase) return false
   const user = await getCurrentUser()
-  if (!user) return
+  if (!user) return false
 
   try {
-    const dbNotes: Partial<DbStickyNote>[] = notes.map(note => ({
-      id: note.id,
-      user_id: user.id,
-      content: note.content,
-      position_x: note.position.x,
-      position_y: note.position.y,
-      size_width: note.size.width,
-      size_height: note.size.height,
-      color: note.color,
-      type: note.type,
-    }))
+    if (notes.length > 0) {
+      const dbNotes: Partial<DbStickyNote>[] = notes.map(note => ({
+        id: note.id,
+        user_id: user.id,
+        week_start: weekStart,
+        content: note.content,
+        position_x: note.position.x,
+        position_y: note.position.y,
+        size_width: note.size.width,
+        size_height: note.size.height,
+        color: note.color,
+        type: note.type,
+      }))
 
-    const { error } = await supabase
+      const { error } = await supabase
+        .from('sticky_notes')
+        .upsert(dbNotes, { onConflict: 'id' })
+
+      if (error) throw error
+    }
+
+    // Delete any notes for this week that no longer exist locally.
+    const localIds = notes.map(n => n.id)
+    const { data: remoteNotes } = await supabase
       .from('sticky_notes')
-      .upsert(dbNotes, { onConflict: 'id' })
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('week_start', weekStart)
+    if (remoteNotes) {
+      const stale = (remoteNotes as { id: string }[])
+        .map(n => n.id)
+        .filter(id => !localIds.includes(id))
+      if (stale.length > 0) {
+        await supabase.from('sticky_notes').delete().in('id', stale)
+      }
+    }
 
-    if (error) throw error
     return true
   } catch (error) {
     console.error('Error syncing sticky notes to Supabase:', error)
@@ -179,7 +202,7 @@ export const syncStickyNotesToSupabase = async (notes: StickyNote[]) => {
   }
 }
 
-export const loadStickyNotesFromSupabase = async (): Promise<StickyNote[] | null> => {
+export const loadStickyNotesFromSupabase = async (weekStart: string): Promise<StickyNote[] | null> => {
   if (!supabase) return null
   const user = await getCurrentUser()
   if (!user) return null
@@ -189,6 +212,7 @@ export const loadStickyNotesFromSupabase = async (): Promise<StickyNote[] | null
       .from('sticky_notes')
       .select('*')
       .eq('user_id', user.id)
+      .eq('week_start', weekStart)
       .order('created_at', { ascending: true })
 
     if (error) throw error
@@ -366,6 +390,50 @@ export const loadNotepadFromSupabase = async (): Promise<string | null> => {
   }
 }
 
+// Syncs the habit template (names + IDs only, no completion data) to Supabase.
+// Called whenever the user adds, renames, or deletes a habit.
+export const syncHabitTemplateToSupabase = async (habits: { id: string; name: string }[]) => {
+  if (!supabase) return false
+  const user = await getCurrentUser()
+  if (!user) return false
+
+  try {
+    const { error } = await supabase
+      .from('habit_template')
+      .upsert({ user_id: user.id, habits, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+    if (error) throw error
+    return true
+  } catch (error) {
+    console.error('Error syncing habit template to Supabase:', error)
+    return false
+  }
+}
+
+// Loads the habit template from Supabase. Returns null if no template exists yet.
+export const loadHabitTemplateFromSupabase = async (): Promise<{ id: string; name: string }[] | null> => {
+  if (!supabase) return null
+  const user = await getCurrentUser()
+  if (!user) return null
+
+  try {
+    const { data, error } = await supabase
+      .from('habit_template')
+      .select('habits')
+      .eq('user_id', user.id)
+      .single()
+
+    if (error) {
+      if (error.code === 'PGRST116') return null // no template yet
+      throw error
+    }
+
+    return (data as DbHabitTemplate).habits ?? null
+  } catch (error) {
+    console.error('Error loading habit template from Supabase:', error)
+    return null
+  }
+}
+
 export interface AllSupabaseData {
   habits: Habit[] | null
   notes: StickyNote[] | null
@@ -382,7 +450,7 @@ export const loadAllFromSupabase = async (
 ): Promise<AllSupabaseData> => {
   const [habits, notes, gratitude, health, notepad] = await Promise.all([
     loadHabitsFromSupabase(weekDate),
-    loadStickyNotesFromSupabase(),
+    loadStickyNotesFromSupabase(weekKey),
     loadGratitudeFromSupabase(weekKey),
     loadHealthFromSupabase(weekKey),
     loadNotepadFromSupabase(),

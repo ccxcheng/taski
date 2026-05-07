@@ -5,17 +5,20 @@ const habitRank = (s: 'completed' | 'skipped' | false): number =>
   s === 'completed' ? 2 : s === 'skipped' ? 1 : 0
 
 export const mergeHabits = (local: Habit[], remote: Habit[]): Habit[] => {
+  if (local.length === 0) return local
   if (remote.length === 0) return local
-  if (local.length === 0) return remote
 
-  return remote.map(rh => {
-    const lh = local.find(h => h.id === rh.id)
-    if (!lh) return rh
-    const completed = rh.completed.map((rc, i) => {
-      const lc = lh.completed[i]
-      return habitRank(lc) > habitRank(rc) ? lc : rc
+  // Local is the source of truth for which habits exist and their names.
+  // Remote only contributes completion states for matching IDs —
+  // it never adds, removes, or renames habits.
+  return local.map(lh => {
+    const rh = remote.find(h => h.id === lh.id)
+    if (!rh) return lh
+    const completed = lh.completed.map((lc, i) => {
+      const rc = rh.completed[i]
+      return habitRank(rc) > habitRank(lc) ? rc : lc
     }) as ('completed' | 'skipped' | false)[]
-    return { ...rh, completed }
+    return { ...lh, completed }
   })
 }
 

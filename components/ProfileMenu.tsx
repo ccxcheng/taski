@@ -3,7 +3,6 @@ import { LogOut, Palette, Check, Pencil, X, Heart, Activity } from 'lucide-react
 import { useTheme, type ThemeName } from '@/contexts/ThemeContext'
 import React from 'react'
 import { supabase } from '@/lib/supabase'
-import Image from 'next/image'
 import { useSounds } from '@/hooks/useSounds'
 
 interface ProfileMenuProps {
@@ -125,7 +124,12 @@ export function ProfileMenu({ user, displayName, onSignOut, onSignIn, onNameUpda
         }}
         className="cursor-pointer transition-opacity hover:opacity-80"
       >
-        <Image src="/sparkle.png" alt="sparkle" width={20} height={20} className="w-5 h-5" />
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-5 h-5">
+          <path
+            d="M12 2 Q14 10 22 12 Q14 14 12 22 Q10 14 2 12 Q10 10 12 2Z"
+            fill="#0b268c"
+          />
+        </svg>
       </div>
 
       <AnimatePresence>

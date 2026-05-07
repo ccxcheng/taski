@@ -18,7 +18,7 @@ import { useStickyNotes } from "@/hooks/useStickyNotes"
 import { updateTemplateFromCurrentWeek, resetTemplateToDefault, updateHabitStreaks } from "@/utils/storageUtils"
 import { SillyCat } from "@/components/SillyCat/SillyCat"
 import AuthModal from "@/components/Auth/AuthModal"
-import { getCurrentUser, signOut, syncHabitsToSupabase, syncStickyNotesToSupabase, deleteStickyNoteFromSupabase, syncGratitudeToSupabase, syncHealthToSupabase, syncNotepadToSupabase, loadAllFromSupabase } from "@/utils/supabaseSync"
+import { getCurrentUser, signOut, syncHabitsToSupabase, syncStickyNotesToSupabase, deleteStickyNoteFromSupabase, syncGratitudeToSupabase, syncHealthToSupabase, syncNotepadToSupabase, loadAllFromSupabase, syncHabitTemplateToSupabase, loadHabitTemplateFromSupabase } from "@/utils/supabaseSync"
 import { mergeHabits, mergeNotes, mergeWeekTextArray, mergeNotepad } from "@/utils/syncHelpers"
 import { supabase } from "@/lib/supabase"
 import { useTheme } from "@/contexts/ThemeContext"
@@ -235,6 +235,29 @@ export default function HabitTracker() {
         setNotepadContent(prev => mergeNotepad(prev, remote.notepad!))
       }
 
+      // Pull habit template (names/IDs) from Supabase and apply to current +
+      // future weeks if it differs from what's stored locally. This is how
+      // habit structure (add/rename/delete) propagates across devices on login.
+      loadHabitTemplateFromSupabase().then(remoteTemplate => {
+        if (!remoteTemplate || remoteTemplate.length === 0) return
+        const localTemplate = mergedHabits.map((h: Habit) => ({ id: h.id, name: h.name }))
+        const sameIds = remoteTemplate.map((h: { id: string }) => h.id).sort().join(',') === localTemplate.map((h: { id: string }) => h.id).sort().join(',')
+        const sameNames = remoteTemplate.every((rh: { id: string; name: string }) => localTemplate.find((lh: { id: string }) => lh.id === rh.id)?.name === rh.name)
+        if (!sameIds || !sameNames) {
+          // Remote template differs — apply it: preserve completion data for
+          // matching IDs, blank completions for new habits.
+          const appliedHabits = remoteTemplate.map((rh: { id: string; name: string }) => {
+            const existing = mergedHabits.find((h: Habit) => h.id === rh.id)
+            return existing
+              ? { ...existing, name: rh.name }
+              : { id: rh.id, name: rh.name, completed: Array(7).fill(false), currentStreak: 0, longestStreak: 0 }
+          })
+          const updatedWeekData = { ...weekDataRef.current!, habits: appliedHabits }
+          saveCurrentWeekData(updatedWeekData)
+          updateTemplateFromCurrentWeek(updatedWeekData)
+        }
+      })
+
       // Mark this (user, weekKey) as initially synced AFTER state is updated;
       // sync effects gate on this so they don't fire before the merge.
       hasInitialSyncedRef.current = syncKey
@@ -261,9 +284,9 @@ export default function HabitTracker() {
 
   useEffect(() => {
     if (!isSyncReady || !weekData?.notes) return
-    const t = setTimeout(() => syncStickyNotesToSupabase(weekData.notes), 1000)
+    const t = setTimeout(() => syncStickyNotesToSupabase(weekData.notes, currentWeekKey), 1000)
     return () => clearTimeout(t)
-  }, [isSyncReady, weekData?.notes])
+  }, [isSyncReady, weekData?.notes, currentWeekKey])
 
   useEffect(() => {
     if (!isSyncReady || !weekData?.gratitude) return
@@ -420,17 +443,10 @@ export default function HabitTracker() {
   const saveHabitName = () => {
     if (editingId && weekData) {
       const updatedHabits = habits.map((habit) => (habit.id === editingId ? { ...habit, name: editingName } : habit))
-      const updatedWeekData = {
-        ...weekData,
-        habits: updatedHabits,
-      }
+      const updatedWeekData = { ...weekData, habits: updatedHabits }
       saveCurrentWeekData(updatedWeekData)
-      
-      // Update template if this is the current week
-      if (isCurrentWeek) {
-        updateTemplateFromCurrentWeek(updatedWeekData)
-      }
-      
+      if (isCurrentWeek) updateTemplateFromCurrentWeek(updatedWeekData)
+      if (user) syncHabitTemplateToSupabase(updatedHabits.map(h => ({ id: h.id, name: h.name })))
       setEditingId(null)
     }
   }
@@ -444,16 +460,10 @@ export default function HabitTracker() {
     if (!weekData) return
 
     const updatedHabits = habits.filter((habit) => habit.id !== habitId)
-    const updatedWeekData = {
-      ...weekData,
-      habits: updatedHabits,
-    }
+    const updatedWeekData = { ...weekData, habits: updatedHabits }
     saveCurrentWeekData(updatedWeekData)
-    
-    // Update template if this is the current week
-    if (isCurrentWeek) {
-      updateTemplateFromCurrentWeek(updatedWeekData)
-    }
+    if (isCurrentWeek) updateTemplateFromCurrentWeek(updatedWeekData)
+    if (user) syncHabitTemplateToSupabase(updatedHabits.map(h => ({ id: h.id, name: h.name })))
   }
 
   const toggleEditMode = () => {
@@ -474,16 +484,10 @@ export default function HabitTracker() {
       longestStreak: 0,
     }
 
-    const updatedWeekData = {
-      ...weekData,
-      habits: [...habits, newHabit],
-    }
+    const updatedWeekData = { ...weekData, habits: [...habits, newHabit] }
     saveCurrentWeekData(updatedWeekData)
-    
-    // Update template if this is the current week
-    if (isCurrentWeek) {
-      updateTemplateFromCurrentWeek(updatedWeekData)
-    }
+    if (isCurrentWeek) updateTemplateFromCurrentWeek(updatedWeekData)
+    if (user) syncHabitTemplateToSupabase(updatedWeekData.habits.map(h => ({ id: h.id, name: h.name })))
   }
 
   useEffect(() => {
@@ -767,41 +771,33 @@ export default function HabitTracker() {
         )}
       </AnimatePresence>
 
-      {/* Floating Action Buttons */}
-      <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 md:bottom-8 md:right-8 flex flex-col gap-2 sm:gap-3 md:gap-4 z-40">
-        
-        
-        <motion.button
-          onClick={() => { playButton(); toggleEditMode() }}
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          className={getFloatingButtonClasses(theme, editMode)}
-        >
-          <Pencil className={`w-4 h-4 sm:w-5 sm:h-5 transition-transform duration-200 ${editMode ? "rotate-45" : ""}`} />
-        </motion.button>
-      </div>
-
-      {/* Sticky Note Button */}
-      <div className="fixed bottom-[88px] right-4 sm:bottom-[108px] sm:right-6 md:bottom-24 md:right-8 z-40">
-        <motion.button
-          onClick={handleAddStickyNote}
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.9 }}
-          className={getFloatingButtonClasses(theme, false)}
-        >
-          <StickyNote className="w-4 h-4 sm:w-5 sm:h-5" />
-        </motion.button>
-      </div>
-
-      {/* Calendar Button */}
-      <div className="fixed bottom-[132px] right-4 sm:bottom-[156px] sm:right-6 md:bottom-40 md:right-8 z-40">
+      {/* Floating Action Buttons — stacked column, bottom-right */}
+      <div className="fixed bottom-6 right-4 sm:bottom-6 sm:right-6 md:bottom-8 md:right-8 flex flex-col gap-3 z-40">
         <motion.button
           onClick={() => { playTabOpen(); setIsCalendarOpen(true) }}
           whileHover={{ scale: 1.1 }}
           whileTap={{ scale: 0.9 }}
           className={getFloatingButtonClasses(theme, false)}
         >
-          <Calendar className="h-4 w-4 sm:h-5 sm:w-5" />
+          <Calendar className="w-[18px] h-[18px]" />
+        </motion.button>
+
+        <motion.button
+          onClick={handleAddStickyNote}
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.9 }}
+          className={getFloatingButtonClasses(theme, false)}
+        >
+          <StickyNote className="w-[18px] h-[18px]" />
+        </motion.button>
+
+        <motion.button
+          onClick={() => { playButton(); toggleEditMode() }}
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.9 }}
+          className={getFloatingButtonClasses(theme, editMode)}
+        >
+          <Pencil className={`w-[18px] h-[18px] transition-transform duration-200 ${editMode ? "rotate-45" : ""}`} />
         </motion.button>
       </div>
 

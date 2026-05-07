@@ -211,8 +211,7 @@ export const SillyCat = ({ completedToday, totalHabits, onDoubleClick }: SillyCa
           repeat: showHappyAnimation ? 0 : 0,
           repeatDelay: 0
         }}
-        className="cursor-pointer select-none"
-        title={shouldBeHappy ? "Yay! All habits completed! 🎉" : "Click me or complete your habits to make me happy! 😸"}
+        
       >
         <img 
           src={shouldBeHappy || showHappyAnimation ? "/sleepycat-awake.png" : "/sleepycat.png"} 

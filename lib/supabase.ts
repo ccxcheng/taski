@@ -34,6 +34,7 @@ export interface DbDailyCompletion {
 export interface DbStickyNote {
   id: string
   user_id: string
+  week_start: string
   content: string
   position_x: number
   position_y: number
@@ -65,5 +66,11 @@ export interface DbNotepad {
   user_id: string
   content: string
   created_at: string
+  updated_at: string
+}
+
+export interface DbHabitTemplate {
+  user_id: string
+  habits: { id: string; name: string }[]
   updated_at: string
 }
